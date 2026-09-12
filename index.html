@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#173f35">
+  <title>家庭記帳簿</title>
+  <link rel="stylesheet" href="style.css?v=20260912-2">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">家</div>
+      <div><h1>家庭記帳簿</h1><p>把每一筆生活，整理成安心</p></div>
+    </div>
+    <div class="header-actions">
+      <button class="ghost" id="utilitySetupShortcut">⚙ 帳單基本設定</button>
+      <button class="ghost" id="exportBtn">匯出 CSV</button>
+      <label class="ghost file-btn">匯入 CSV<input id="importInput" type="file" accept=".csv,text/csv"></label>
+    </div>
+  </header>
+
+  <main>
+    <section class="toolbar card">
+      <div>
+        <label for="monthFilter">查看月份</label>
+        <input id="monthFilter" type="month">
+      </div>
+      <div>
+        <label for="typeFilter">收支類型</label>
+        <select id="typeFilter" onchange="render()"><option value="all">全部</option><option value="income">收入</option><option value="expense">支出</option></select>
+      </div>
+      <div>
+        <label for="quickFilter">快速查詢</label>
+        <select id="quickFilter"><option value="all">每月總覽</option><option value="expense">支出查詢</option><option value="credit">信用卡支出</option><option value="income">收入查詢</option><option value="mortgage">房貸支出</option></select>
+      </div>
+      <div class="search-wrap">
+        <label for="searchInput">搜尋</label>
+        <input id="searchInput" type="search" placeholder="分類、成員或備註">
+      </div>
+      <button class="primary" id="openFormBtn">＋ 新增一筆</button>
+    </section>
+
+    <section class="card recurring-card">
+      <details id="recurringDetails">
+        <summary class="recurring-summary">
+          <div><h2>每月固定收支設定</h2><p>房貸支出與房貸收入每月自動帶入收支表</p></div>
+          <div class="recurring-count"><span>目前設定</span><strong id="recurringCount">0 項</strong></div>
+          <span class="expand-label">展開 ▼</span>
+        </summary>
+        <div class="recurring-content">
+          <div class="recurring-actions"><p>刪除設定只停止未來自動帶入，已產生的舊資料會保留。</p><button class="primary" id="openRecurringBtn">＋ 新增固定收支</button></div>
+          <div id="recurringList" class="recurring-list"></div>
+          <div id="recurringEmpty" class="account-empty">尚未設定每月固定收支。</div>
+        </div>
+      </details>
+    </section>
+
+    <section class="summary-grid">
+      <article class="summary income"><span>本月收入</span><strong id="incomeTotal">NT$ 0</strong><small id="incomeCount">0 筆</small></article>
+      <article class="summary expense"><span>本月支出</span><strong id="expenseTotal">NT$ 0</strong><small id="expenseCount">0 筆</small></article>
+      <article class="summary balance"><span>本月結餘</span><strong id="balanceTotal">NT$ 0</strong><small id="balanceHint">收支平衡</small></article>
+      <article class="summary credit"><span>本月信用卡支出</span><strong id="creditTotal">NT$ 0</strong><small id="mortgageTotal">房貸 NT$ 0</small></article>
+    </section>
+
+    <section class="asset-overview card" aria-label="家庭資產總覽">
+      <div><span>台幣戶口</span><strong id="twdAssetTotal">NT$ 0</strong></div>
+      <div><span>外幣戶口（換算台幣）</span><strong id="foreignAssetTotal">NT$ 0</strong></div>
+      <div class="asset-grand"><span>家庭總資產</span><strong id="assetGrandTotal">NT$ 0</strong></div>
+      <small>外幣資產依各帳戶最後記錄的匯率換算</small>
+    </section>
+
+    <section class="card analysis-card">
+      <details id="analysisDetails">
+        <summary class="analysis-summary">
+          <div><h2>年度與歷史累計分析</h2><p>按年份查詢，並查看開始記帳至今的加總</p></div>
+          <div class="analysis-head-total"><span>歷史累計結餘</span><strong id="historyBalanceHead">NT$ 0</strong></div>
+          <span class="expand-label">展開 ▼</span>
+        </summary>
+        <div class="analysis-content">
+          <div class="analysis-toolbar"><div><label for="annualYear">分析年份</label><select id="annualYear"></select></div></div>
+          <h3>年度分析</h3>
+          <div class="analysis-totals">
+            <article><span>年度收入</span><strong class="income-text" id="annualIncome">NT$ 0</strong></article>
+            <article><span>年度支出</span><strong class="expense-text" id="annualExpense">NT$ 0</strong></article>
+            <article><span>年度結餘</span><strong id="annualBalance">NT$ 0</strong></article>
+          </div>
+          <div class="analysis-grid">
+            <div><h3>每月收支</h3><div class="table-wrap"><table><thead><tr><th>月份</th><th class="amount-col">收入</th><th class="amount-col">支出</th><th class="amount-col">結餘</th></tr></thead><tbody id="annualMonthBody"></tbody></table></div></div>
+            <div><h3>年度支出分類</h3><div id="annualCategoryBreakdown" class="annual-category"></div></div>
+          </div>
+          <h3>歷史累計</h3>
+          <div class="analysis-totals history-totals">
+            <article><span>歷史總收入</span><strong class="income-text" id="historyIncome">NT$ 0</strong></article>
+            <article><span>歷史總支出</span><strong class="expense-text" id="historyExpense">NT$ 0</strong></article>
+            <article><span>歷史總結餘</span><strong id="historyBalance">NT$ 0</strong></article>
+          </div>
+          <p class="analysis-range" id="historyRange">尚無歷史帳目</p>
+        </div>
+      </details>
+    </section>
+
+    <section class="card bank-card">
+      <details id="bankDetails">
+        <summary class="bank-summary">
+          <div><h2>銀行帳戶與金融卡</h2><p>點此展開或收合多張銀行卡管理</p></div>
+          <div class="bank-total"><span>存簿總金額</span><strong id="bankGrandTotal">NT$ 0</strong></div>
+          <span class="expand-label">展開 ▼</span>
+        </summary>
+        <div class="bank-content">
+          <div class="bank-actions"><p>集中查看全家的銀行存款與金融卡</p><button class="primary" id="openAccountBtn">＋ 新增銀行戶頭</button></div>
+          <div id="accountList" class="account-list"></div>
+          <div id="accountEmpty" class="account-empty">尚未建立銀行戶頭，請按「新增銀行戶頭」。</div>
+        </div>
+      </details>
+    </section>
+
+    <section class="card foreign-card">
+      <details id="foreignDetails">
+        <summary class="foreign-summary">
+          <div><h2>外幣現金與外幣戶頭</h2><p>美元、日圓、人民幣獨立管理，並換算為台幣</p></div>
+          <div class="foreign-total"><span>外幣折合台幣</span><strong id="foreignGrandTotal">NT$ 0</strong></div>
+          <span class="expand-label">展開 ▼</span>
+        </summary>
+        <div class="foreign-content">
+          <div class="foreign-actions"><p>匯率為 1 單位外幣可換算的台幣金額</p><button class="primary" id="openForeignBtn">＋ 新增外幣資產</button></div>
+          <div id="foreignAccountList" class="account-list"></div>
+          <div id="foreignAccountEmpty" class="account-empty">尚未建立外幣現金或外幣戶頭。</div>
+        </div>
+      </details>
+    </section>
+
+    <section class="card credit-entry-card">
+      <details id="creditDetails">
+        <summary class="credit-summary">
+          <div><h2>信用卡支出</h2><p>點此展開或收合多張信用卡明細</p></div>
+          <div class="credit-section-total"><span>本月信用卡合計</span><strong id="creditSectionTotal">NT$ 0</strong></div>
+          <span class="expand-label">展開 ▼</span>
+        </summary>
+        <div class="credit-content">
+          <div class="credit-actions"><p>可記錄多張信用卡，並依卡片統計本月金額</p><button class="primary" id="openCreditBtn">＋ 新增信用卡支出</button></div>
+          <div id="creditQuickList" class="credit-quick-list"></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>帳單繳款日</th><th>信用卡</th><th>分類／備註</th><th>持卡人</th><th class="amount-col">金額</th><th></th></tr></thead>
+              <tbody id="creditRecordBody"></tbody>
+            </table>
+            <div id="creditRecordEmpty" class="account-empty">這個月份尚無信用卡支出。</div>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="card utility-card">
+      <details id="utilityDetails">
+        <summary class="utility-summary">
+          <div><h2>電話、水電與網路費</h2><p>點此展開或收合固定帳單</p></div>
+          <div class="utility-total"><span>本月帳單合計</span><strong id="utilityTotal">NT$ 0</strong><small id="utilityUnpaid">待繳 0 筆</small></div>
+          <span class="expand-label">展開 ▼</span>
+        </summary>
+        <div class="utility-content">
+          <div class="utility-actions"><p>先設定基本資料，新增帳單時即可直接下拉選擇</p><div class="utility-action-buttons"><button class="ghost dark" id="openUtilitySettingsBtn">⚙ 基本資料設定</button><button class="primary" id="openUtilityBtn">＋ 新增固定帳單</button></div></div>
+          <section class="electric-analysis" aria-labelledby="electricAnalysisTitle">
+            <div class="electric-analysis-head">
+              <div><h3 id="electricAnalysisTitle">1F／2F／3F 電費分析</h3><p>每期比較與各年度累計分開統計</p></div>
+              <div class="electric-year-filter"><label for="electricAnalysisYear">每期分析年份</label><select id="electricAnalysisYear"></select></div>
+            </div>
+            <div class="electric-year-totals" id="electricYearTotals"></div>
+            <div class="electric-chart-grid">
+              <article class="electric-chart-card">
+                <div class="electric-chart-title"><div><h4>每期電費</h4><p id="electricPeriodCaption">依帳單月份比較各樓層</p></div><div class="electric-legend"><span class="floor-1">1F</span><span class="floor-2">2F</span><span class="floor-3">3F</span></div></div>
+                <div id="electricPeriodChart" class="electric-period-chart"></div>
+              </article>
+              <article class="electric-chart-card">
+                <div class="electric-chart-title"><div><h4>每年電費</h4><p>比較各年度及各樓層總額</p></div><div class="electric-legend"><span class="floor-1">1F</span><span class="floor-2">2F</span><span class="floor-3">3F</span></div></div>
+                <div id="electricAnnualChart" class="electric-annual-chart"></div>
+              </article>
+            </div>
+          </section>
+          <div id="utilityQuickList" class="utility-quick-list"></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>帳單月份</th><th>帳單項目／名稱</th><th>使用人</th><th>狀態</th><th class="amount-col">金額</th><th></th></tr></thead>
+              <tbody id="utilityRecordBody"></tbody>
+            </table>
+            <div id="utilityRecordEmpty" class="account-empty">這個月份尚無固定帳單資料。</div>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="content-grid">
+      <article class="card records-card">
+        <div class="section-head"><div><h2>收支明細</h2><p id="recordCount">共 0 筆</p></div><div class="record-filter-actions"><select id="recordTypeFilter" aria-label="選擇收入或支出明細"><option value="all">全部明細</option><option value="income">收入明細</option><option value="expense">支出明細</option></select><button class="text-btn" id="clearFiltersBtn">清除篩選</button></div></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>日期</th><th>類型</th><th>分類／備註</th><th>付款方式／成員</th><th class="amount-col">金額</th><th></th></tr></thead>
+            <tbody id="recordBody"></tbody>
+          </table>
+          <div class="empty" id="emptyState"><div>◎</div><h3>還沒有帳目</h3><p>新增第一筆家庭收入或支出吧。</p><button class="primary" id="emptyAddBtn">新增帳目</button></div>
+        </div>
+      </article>
+
+      <aside class="card breakdown-card">
+        <div class="section-head"><div><h2>支出分布</h2><p>依分類統計</p></div></div>
+        <div id="breakdown" class="breakdown"></div>
+      </aside>
+    </section>
+  </main>
+
+  <dialog id="entryDialog">
+    <form id="entryForm" method="dialog">
+      <div class="dialog-head"><div><h2 id="dialogTitle">新增帳目</h2><p>記錄家庭的每一筆收支</p></div><button type="button" class="close" id="closeDialogBtn" aria-label="關閉">×</button></div>
+      <input type="hidden" id="entryId">
+      <div class="type-switch">
+        <label><input type="radio" name="entryType" value="expense" checked><span>支出</span></label>
+        <label><input type="radio" name="entryType" value="income"><span>收入</span></label>
+      </div>
+      <div class="form-grid">
+        <div><label for="entryDate">日期</label><input id="entryDate" type="date" required></div>
+        <div><label for="entryAmount">金額（NT$）</label><input id="entryAmount" type="number" min="1" step="1" placeholder="0" required></div>
+        <div><label for="entryCategory">分類</label><select id="entryCategory" required></select></div>
+        <div id="entryPropertyWrap"><label for="entryProperty">房產選項</label><select id="entryProperty"></select></div>
+        <div><label for="entryMember">家庭成員</label><select id="entryMember"><option value="">共同／未指定</option><option>爸爸 蔡守展</option><option>媽媽 洪菁蓮</option><option>大兒子 蔡焱宜</option><option>二兒子 蔡鈜宜</option><option>三兒子 蔡淞承</option></select></div>
+        <div><label for="entryPayment">付款方式</label><select id="entryPayment"><option>現金</option><option>信用卡</option><option>銀行轉帳</option><option>自動扣款</option><option>其他</option></select></div>
+        <div id="cardNameWrap"><label for="entryCardName">信用卡名稱</label><input id="entryCardName" type="text" list="creditCardNames" maxlength="30" placeholder="選擇或輸入信用卡"></div>
+        <div class="full"><label for="entryNote">備註</label><input id="entryNote" type="text" maxlength="80" placeholder="這筆錢用在哪裡？"></div>
+      </div>
+      <div class="dialog-actions"><button type="button" class="ghost dark" id="cancelBtn">取消</button><button type="button" class="ghost dark" id="finishEntryBtn">結束輸入</button><button type="submit" class="primary">儲存帳目</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="recurringDialog">
+    <form id="recurringForm" method="dialog">
+      <div class="dialog-head"><div><h2 id="recurringDialogTitle">新增每月固定收支</h2><p>設定後會從起始月份起每月自動加入收支表</p></div><button type="button" class="close" id="closeRecurringBtn" aria-label="關閉">×</button></div>
+      <input type="hidden" id="recurringId">
+      <div class="form-grid account-form-grid">
+        <div><label for="recurringKind">固定項目</label><select id="recurringKind" required><option value="mortgage_expense">房貸支出</option><option value="mortgage_income">房貸收入</option></select></div>
+        <div><label for="recurringProperty">房產</label><select id="recurringProperty" required></select></div>
+        <div><label for="recurringAmount">每月金額（NT$）</label><input id="recurringAmount" type="number" min="1" step="1" placeholder="0" required></div>
+        <div><label for="recurringStartMonth">開始月份</label><input id="recurringStartMonth" type="month" required></div>
+        <div><label for="recurringDay">每月入帳日</label><select id="recurringDay"></select></div>
+        <div><label for="recurringMember">家庭成員</label><select id="recurringMember"><option value="">共同／未指定</option><option>爸爸 蔡守展</option><option>媽媽 洪菁蓮</option><option>大兒子 蔡焱宜</option><option>二兒子 蔡鈜宜</option><option>三兒子 蔡淞承</option></select></div>
+        <div><label for="recurringNote">備註</label><input id="recurringNote" type="text" maxlength="80" placeholder="例如：自住房貸、租金補貼"></div>
+      </div>
+      <div class="dialog-actions"><button type="button" class="ghost dark" id="cancelRecurringBtn">取消</button><button type="submit" class="primary">儲存固定設定</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="accountDialog">
+    <form id="accountForm" method="dialog">
+      <div class="dialog-head"><div><h2 id="accountDialogTitle">新增銀行戶頭</h2><p>記錄存簿餘額與戶頭持有人</p></div><button type="button" class="close" id="closeAccountBtn" aria-label="關閉">×</button></div>
+      <input type="hidden" id="accountId">
+      <div class="form-grid account-form-grid">
+        <div><label for="accountBank">銀行</label><select id="accountBank" required><option value="">請選擇銀行</option><option>臺灣銀行</option><option>土地銀行</option><option>合作金庫</option><option>第一銀行</option><option>華南銀行</option><option>彰化銀行</option><option>兆豐銀行</option><option>臺灣企銀</option><option>中國信託</option><option>國泰世華</option><option>台新銀行</option><option>玉山銀行</option><option>永豐銀行</option><option>台北富邦</option><option>新光銀行</option><option>元大銀行</option><option>郵局</option><option>其他銀行</option></select></div>
+        <div><label for="accountCustomBank">其他銀行名稱</label><input id="accountCustomBank" type="text" maxlength="30" placeholder="選其他銀行時填寫"></div>
+        <div><label for="accountHolder">戶頭人名</label><select id="accountHolder" required><option value="">請選擇家庭成員</option><option>爸爸 蔡守展</option><option>媽媽 洪菁蓮</option><option>大兒子 蔡焱宜</option><option>二兒子 蔡鈜宜</option><option>三兒子 蔡淞承</option></select></div>
+        <div><label for="accountNickname">帳戶／金融卡名稱</label><input id="accountNickname" type="text" maxlength="40" placeholder="例如：薪轉戶、生活費卡"></div>
+        <div><label for="accountNumber">帳號末五碼</label><input id="accountNumber" type="text" maxlength="5" inputmode="numeric" placeholder="僅記錄末五碼"></div>
+        <div class="full"><label for="accountBalance">存簿目前金額（NT$）</label><input id="accountBalance" type="number" min="0" step="1" placeholder="0" required></div>
+      </div>
+      <div class="dialog-actions"><button type="button" class="ghost dark" id="cancelAccountBtn">取消</button><button type="button" class="ghost dark" id="finishAccountBtn">結束輸入</button><button type="submit" class="primary">儲存銀行戶頭</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="foreignDialog">
+    <form id="foreignForm" method="dialog">
+      <div class="dialog-head"><div><h2 id="foreignDialogTitle">新增外幣資產</h2><p>記錄外幣餘額與換算台幣匯率</p></div><button type="button" class="close" id="closeForeignBtn" aria-label="關閉">×</button></div>
+      <input type="hidden" id="foreignId">
+      <div class="form-grid account-form-grid">
+        <div><label for="foreignCurrency">幣別</label><select id="foreignCurrency" required><option value="USD">美元（USD）</option><option value="JPY">日圓（JPY）</option><option value="CNY">人民幣（CNY）</option></select></div>
+        <div><label for="foreignKind">資產形式</label><select id="foreignKind" required><option value="cash">現金</option><option value="bank">銀行戶頭</option></select></div>
+        <div id="foreignBankWrap"><label for="foreignBank">銀行名稱</label><input id="foreignBank" type="text" maxlength="30" placeholder="例如：臺灣銀行"></div>
+        <div><label for="foreignHolder">持有人</label><select id="foreignHolder" required><option value="">請選擇家庭成員</option><option>爸爸 蔡守展</option><option>媽媽 洪菁蓮</option><option>大兒子 蔡焱宜</option><option>二兒子 蔡鈜宜</option><option>三兒子 蔡淞承</option></select></div>
+        <div><label for="foreignNickname">名稱</label><input id="foreignNickname" type="text" maxlength="40" placeholder="例如：旅遊用美元、人民幣存款"></div>
+        <div><label for="foreignNumber">帳號末五碼</label><input id="foreignNumber" type="text" maxlength="5" inputmode="numeric" placeholder="現金可不填"></div>
+        <div><label for="foreignBalance">外幣餘額</label><input id="foreignBalance" type="number" min="0" step="0.01" placeholder="0" required></div>
+        <div><label for="foreignRate">換算匯率（NT$）</label><input id="foreignRate" type="number" min="0.0001" step="0.0001" placeholder="1 外幣 = ? 台幣" required></div>
+        <div class="full"><label for="foreignRateDate">匯率記錄日期</label><input id="foreignRateDate" type="date" required></div>
+        <div class="full exchange-preview"><span>預估折合台幣</span><strong id="foreignPreview">NT$ 0</strong></div>
+      </div>
+      <div class="dialog-actions"><button type="button" class="ghost dark" id="cancelForeignBtn">取消</button><button type="button" class="ghost dark" id="finishForeignBtn">結束輸入</button><button type="submit" class="primary">儲存外幣資產</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="creditDialog">
+    <form id="creditForm" method="dialog">
+      <div class="dialog-head"><div><h2 id="creditDialogTitle">新增信用卡支出</h2><p>輸入信用卡帳單繳款資料</p></div><button type="button" class="close" id="closeCreditBtn" aria-label="關閉">×</button></div>
+      <input type="hidden" id="creditEntryId">
+      <div class="form-grid account-form-grid">
+        <div><label for="creditDate">帳單繳款日</label><input id="creditDate" type="date" required></div>
+        <div><label for="creditAmount">支出金額（NT$）</label><input id="creditAmount" type="number" min="1" step="1" placeholder="0" required></div>
+        <div><label for="creditCardName">信用卡名稱</label><input id="creditCardName" type="text" list="creditCardNames" maxlength="30" placeholder="選擇既有卡片或輸入新卡片" required><datalist id="creditCardNames"></datalist></div>
+        <div><label for="creditCategory">支出分類</label><select id="creditCategory" required></select></div>
+        <div><label for="creditHolder">持卡人</label><select id="creditHolder"><option value="">請選擇家庭成員</option><option>爸爸 蔡守展</option><option>媽媽 洪菁蓮</option><option>大兒子 蔡焱宜</option><option>二兒子 蔡鈜宜</option><option>三兒子 蔡淞承</option></select></div>
+        <div><label for="creditNote">備註</label><input id="creditNote" type="text" maxlength="80" placeholder="消費商店或用途"></div>
+      </div>
+      <div class="dialog-actions"><button type="button" class="ghost dark" id="cancelCreditBtn">取消</button><button type="button" class="ghost dark" id="finishCreditBtn">結束輸入</button><button type="submit" class="primary">儲存信用卡支出</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="utilityDialog">
+    <form id="utilityForm" method="dialog">
+      <div class="dialog-head"><div><h2 id="utilityDialogTitle">新增固定帳單</h2><p>記錄家庭電費、網路費及電話費</p></div><button type="button" class="close" id="closeUtilityBtn" aria-label="關閉">×</button></div>
+      <input type="hidden" id="utilityEntryId">
+      <div class="form-grid account-form-grid">
+        <div><label for="utilityMonth">帳單月份</label><input id="utilityMonth" type="month" required></div>
+        <div><label for="utilityItem">帳單項目</label><select id="utilityItem" required></select></div>
+        <div><label for="utilityAmount">帳單金額（NT$）</label><input id="utilityAmount" type="number" min="1" step="1" placeholder="0" required></div>
+        <div><label for="utilityDueDate">繳費期限</label><input id="utilityDueDate" type="date"></div>
+        <div><label for="utilityStatus">繳費狀態</label><select id="utilityStatus"><option value="unpaid">尚未繳費</option><option value="paid">已繳費</option></select></div>
+        <div><label for="utilityPayer">使用人名稱（自動帶入）</label><select id="utilityPayer"><option value="">共同／未指定</option><option>爸爸 蔡守展</option><option>媽媽 洪菁蓮</option><option>大兒子 蔡焱宜</option><option>二兒子 蔡鈜宜</option><option>三兒子 蔡淞承</option></select></div>
+        <div id="utilityPhoneNameWrap"><label for="utilityPhoneName">電話／電號／帳號名稱（自動帶入）</label><select id="utilityPhoneName"><option value="">未設定</option></select></div>
+        <div class="full"><label for="utilityNote">備註</label><input id="utilityNote" type="text" maxlength="80" placeholder="電號末碼、門號名稱或其他說明"></div>
+      </div>
+      <div class="dialog-actions"><button type="button" class="ghost dark" id="cancelUtilityBtn">取消</button><button type="button" class="ghost dark" id="finishUtilityBtn">結束輸入</button><button type="submit" class="primary">儲存固定帳單</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="utilitySettingsDialog" class="wide-dialog">
+    <form id="utilityProfileForm" method="dialog">
+      <div class="dialog-head"><div><h2 id="utilitySettingsTitle">手機、網路與電費基本資料</h2><p>設定一次，輸入帳單時即可從下拉選單選擇</p></div><button type="button" class="close" id="closeUtilitySettingsBtn" aria-label="關閉">×</button></div>
+      <input type="hidden" id="utilityProfileId">
+      <div class="form-grid account-form-grid">
+        <div><label for="utilityProfileType">資料類型</label><select id="utilityProfileType" required><option value="electric">電費／電錶</option><option value="mobile">手機</option><option value="landline">家用電話</option><option value="internet">家庭網路</option></select></div>
+        <div><label for="utilityProfileName">項目名稱</label><input id="utilityProfileName" type="text" maxlength="40" placeholder="例如：一樓電錶、爸爸手機" required></div>
+        <div><label for="utilityProfileUser">使用人名稱</label><select id="utilityProfileUser"><option value="">共同／未指定</option><option>爸爸 蔡守展</option><option>媽媽 洪菁蓮</option><option>大兒子 蔡焱宜</option><option>二兒子 蔡鈜宜</option><option>三兒子 蔡淞承</option></select></div>
+        <div><label for="utilityProfileDetail">電話／電號／帳號名稱</label><input id="utilityProfileDetail" type="text" maxlength="50" placeholder="例如：工作門號、電號末碼 1234"></div>
+      </div>
+      <div class="profile-form-actions"><button type="button" class="ghost dark" id="resetUtilityProfileBtn">清除</button><button type="submit" class="primary">儲存基本資料</button></div>
+      <div id="utilityProfileList" class="utility-profile-list"></div>
+      <div class="dialog-actions"><button type="button" class="ghost dark" id="doneUtilitySettingsBtn">結束輸入</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="validationDialog" class="message-dialog">
+    <div class="message-dialog-content">
+      <div class="message-dialog-icon" aria-hidden="true">!</div>
+      <div><h2>資料重複，無法儲存</h2><p id="validationMessage"></p></div>
+    </div>
+    <div class="dialog-actions"><button type="button" class="primary" id="closeValidationBtn">我知道了</button></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="app.js?v=20260912-5"></script>
+</body>
+</html>
