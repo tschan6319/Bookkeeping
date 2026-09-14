@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#173f35">
   <title>家庭記帳簿</title>
-  <link rel="stylesheet" href="style.css?v=20260912-2">
+  <link rel="stylesheet" href="style.css?v=20260913-1">
 </head>
 <body>
   <header class="topbar">
@@ -178,6 +178,10 @@
             </div>
           </section>
           <div id="utilityQuickList" class="utility-quick-list"></div>
+          <div class="utility-phone-total" aria-live="polite">
+            <span>全家電話費總計</span>
+            <strong id="utilityPhoneTotal">NT$ 0</strong>
+          </div>
           <div class="table-wrap">
             <table>
               <thead><tr><th>帳單月份</th><th>帳單項目／名稱</th><th>使用人</th><th>狀態</th><th class="amount-col">金額</th><th></th></tr></thead>
@@ -342,6 +346,6 @@
   </dialog>
 
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js?v=20260912-5"></script>
+  <script src="app.js?v=20260913-1"></script>
 </body>
 </html>
