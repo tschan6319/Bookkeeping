@@ -1,8 +1,24 @@
+const SUPABASE_URL = '請貼上你的 Project URL';
+
+const SUPABASE_PUBLISHABLE_KEY = '請貼上你的 Publishable key';
+
 const STORE_KEY = 'family-ledger-v1';
 const ACCOUNT_STORE_KEY = 'family-ledger-accounts-v1';
 const FOREIGN_ACCOUNT_STORE_KEY = 'family-ledger-foreign-accounts-v1';
 const UTILITY_PROFILE_KEY = 'family-ledger-utility-profiles-v1';
 const RECURRING_STORE_KEY = 'family-ledger-recurring-v1';
+const SUPABASE_CACHE_OWNER_KEY = 'family-ledger-supabase-cache-owner-v1';
+const SUPABASE_JS_CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+let supabaseClient = null;
+let signedInUser = null;
+let cloudSyncReady = false;
+let initializedUserId = '';
+let cloudRefreshBusy = false;
+const cloudPushTimers = new Map();
+const cloudSyncLocks = new Set();
+const dirtyCloudCollections = new Set();
+const knownCloudIds = new Map();
+let initialLocalUploadAllowed = true;
 const expenseCategories = ['飲食','交通','居家','房貸','水電瓦斯','網路費','電話費','教育','醫療','娛樂','購物','保險','其他'];
 const incomeCategories = ['薪資','獎金','房租','房貸收入','投資','兼職','補助','其他收入'];
 const rentalProperties = ['148號','41號','台南房子','高雄房子','新市房子'];
@@ -16,7 +32,6 @@ let accounts = loadAccounts();
 let foreignAccounts = loadForeignAccounts();
 let utilityProfiles = loadUtilityProfiles();
 let recurringSettings = loadRecurringSettings();
-migratePropertyNames();
 
 const $ = id => document.getElementById(id);
 const els = {month:$('monthFilter'),type:$('typeFilter'),quick:$('quickFilter'),search:$('searchInput'),body:$('recordBody'),empty:$('emptyState'),dialog:$('entryDialog'),form:$('entryForm'),category:$('entryCategory'),property:$('entryProperty'),propertyWrap:$('entryPropertyWrap'),payment:$('entryPayment'),cardName:$('entryCardName'),cardWrap:$('cardNameWrap')};
@@ -26,15 +41,141 @@ function localDateValue(date = new Date()) {
   return `${y}-${m}-${d}`;
 }
 function loadRecords(){try{return JSON.parse(localStorage.getItem(STORE_KEY))||[]}catch{return []}}
-function saveRecords(){localStorage.setItem(STORE_KEY,JSON.stringify(records))}
+function saveRecords(){saveLocalCollection('records',records)}
 function loadAccounts(){try{return JSON.parse(localStorage.getItem(ACCOUNT_STORE_KEY))||[]}catch{return []}}
-function saveAccounts(){localStorage.setItem(ACCOUNT_STORE_KEY,JSON.stringify(accounts))}
+function saveAccounts(){saveLocalCollection('accounts',accounts)}
 function loadForeignAccounts(){try{return JSON.parse(localStorage.getItem(FOREIGN_ACCOUNT_STORE_KEY))||[]}catch{return []}}
-function saveForeignAccounts(){localStorage.setItem(FOREIGN_ACCOUNT_STORE_KEY,JSON.stringify(foreignAccounts))}
+function saveForeignAccounts(){saveLocalCollection('foreignAccounts',foreignAccounts)}
 function loadUtilityProfiles(){try{const saved=JSON.parse(localStorage.getItem(UTILITY_PROFILE_KEY));if(!Array.isArray(saved))return defaultUtilityProfiles.map(p=>({...p}));const oldNames={'electric-1':'電錶 1','electric-2':'電錶 2','electric-3':'電錶 3'};const newNames={'electric-1':'電費 1F','electric-2':'電費 2F','electric-3':'電費 3F'};return saved.map(p=>oldNames[p.id]===p.name?{...p,name:newNames[p.id]}:p)}catch{return defaultUtilityProfiles.map(p=>({...p}))}}
-function saveUtilityProfiles(){localStorage.setItem(UTILITY_PROFILE_KEY,JSON.stringify(utilityProfiles))}
+function saveUtilityProfiles(){saveLocalCollection('utilityProfiles',utilityProfiles)}
 function loadRecurringSettings(){try{return JSON.parse(localStorage.getItem(RECURRING_STORE_KEY))||[]}catch{return []}}
 function saveRecurringSettings(){localStorage.setItem(RECURRING_STORE_KEY,JSON.stringify(recurringSettings))}
+
+const CLOUD_COLLECTIONS = Object.freeze({
+  records: {table:'records',storageKey:STORE_KEY,get:()=>records,set:value=>{records=value}},
+  accounts: {table:'accounts',storageKey:ACCOUNT_STORE_KEY,get:()=>accounts,set:value=>{accounts=value}},
+  foreignAccounts: {table:'foreign_accounts',storageKey:FOREIGN_ACCOUNT_STORE_KEY,get:()=>foreignAccounts,set:value=>{foreignAccounts=value}},
+  utilityProfiles: {table:'utility_profiles',storageKey:UTILITY_PROFILE_KEY,get:()=>utilityProfiles,set:value=>{utilityProfiles=value}}
+});
+migratePropertyNames();
+
+function saveLocalCollection(type,value){
+  const collection=CLOUD_COLLECTIONS[type];
+  localStorage.setItem(collection.storageKey,JSON.stringify(value));
+  if(cloudSyncReady&&signedInUser){dirtyCloudCollections.add(type);scheduleCloudPush(type)}
+}
+function supabaseSyncConfigured(){
+  return /^https:\/\/.+\.supabase\.co\/?$/i.test(SUPABASE_URL)&&SUPABASE_PUBLISHABLE_KEY&&SUPABASE_PUBLISHABLE_KEY!=='請貼上你的 Publishable key';
+}
+function loadSupabaseJs(){
+  if(window.supabase?.createClient)return Promise.resolve();
+  return new Promise((resolve,reject)=>{
+    const script=document.createElement('script');script.src=SUPABASE_JS_CDN;script.async=true;
+    script.onload=resolve;script.onerror=()=>reject(new Error('Supabase JS v2 CDN 載入失敗'));
+    document.head.appendChild(script);
+  });
+}
+function camelToSnake(key){return key.replace(/[A-Z]/g,letter=>`_${letter.toLowerCase()}`)}
+function snakeToCamel(key){return key.replace(/_([a-z])/g,(_,letter)=>letter.toUpperCase())}
+function toSupabaseRow(item,userId){
+  const row={};Object.entries(item).forEach(([key,value])=>{if(value!==undefined)row[camelToSnake(key)]=value});row.user_id=userId;return row;
+}
+function fromSupabaseRow(row){
+  const item={};Object.entries(row).forEach(([key,value])=>{if(!['user_id','updated_at'].includes(key))item[snakeToCamel(key)]=value});return item;
+}
+function scheduleCloudPush(type,delay=700){
+  clearTimeout(cloudPushTimers.get(type));
+  cloudPushTimers.set(type,setTimeout(()=>{cloudPushTimers.delete(type);syncCollectionToSupabase(type)},delay));
+}
+async function syncCollectionToSupabase(type){
+  if(!cloudSyncReady||!signedInUser||!navigator.onLine||cloudSyncLocks.has(type))return;
+  const collection=CLOUD_COLLECTIONS[type],current=collection.get(),currentIds=new Set(current.map(item=>String(item.id)));
+  cloudSyncLocks.add(type);dirtyCloudCollections.delete(type);
+  try{
+    if(current.length){const {error}=await supabaseClient.from(collection.table).upsert(current.map(item=>toSupabaseRow(item,signedInUser.id)));if(error)throw error}
+    const deletedIds=[...(knownCloudIds.get(type)||new Set())].filter(id=>!currentIds.has(id));
+    if(deletedIds.length){const {error}=await supabaseClient.from(collection.table).delete().eq('user_id',signedInUser.id).in('id',deletedIds);if(error)throw error}
+    knownCloudIds.set(type,currentIds);
+  }catch(error){dirtyCloudCollections.add(type);console.warn(`[Supabase sync] ${collection.table} 同步失敗，資料仍保留在本機。`,error)}
+  finally{cloudSyncLocks.delete(type);if(dirtyCloudCollections.has(type)&&navigator.onLine)scheduleCloudPush(type,1500)}
+}
+function renderSyncedData(){
+  render();renderAccounts();renderForeignAccounts();renderUtilityProfiles();
+}
+async function loadInitialCollection(type){
+  const collection=CLOUD_COLLECTIONS[type],local=collection.get();
+  const {data,error}=await supabaseClient.from(collection.table).select('*').eq('user_id',signedInUser.id);
+  if(error)throw error;
+  if(data.length){
+    const cloud=data.map(fromSupabaseRow);collection.set(cloud);localStorage.setItem(collection.storageKey,JSON.stringify(cloud));knownCloudIds.set(type,new Set(cloud.map(item=>String(item.id))));return;
+  }
+  const seedRows=initialLocalUploadAllowed?local:(type==='utilityProfiles'?defaultUtilityProfiles.map(profile=>({...profile})):[]);
+  const shouldSeed=seedRows.length&&(localStorage.getItem(collection.storageKey)!==null||type==='utilityProfiles');
+  if(shouldSeed){
+    const {error:uploadError}=await supabaseClient.from(collection.table).upsert(seedRows.map(item=>toSupabaseRow(item,signedInUser.id)));if(uploadError)throw uploadError;
+    collection.set(seedRows);localStorage.setItem(collection.storageKey,JSON.stringify(seedRows));knownCloudIds.set(type,new Set(seedRows.map(item=>String(item.id))));return;
+  }
+  collection.set([]);localStorage.setItem(collection.storageKey,'[]');
+  knownCloudIds.set(type,new Set());
+}
+async function initializeUserSync(user){
+  if(!user||initializedUserId===user.id)return;
+  const cacheOwner=localStorage.getItem(SUPABASE_CACHE_OWNER_KEY);initialLocalUploadAllowed=!cacheOwner||cacheOwner===user.id;
+  signedInUser=user;cloudSyncReady=false;initializedUserId=user.id;setAuthMessage('登入成功，正在同步資料…');
+  try{
+    await Promise.all(Object.keys(CLOUD_COLLECTIONS).map(loadInitialCollection));localStorage.setItem(SUPABASE_CACHE_OWNER_KEY,user.id);cloudSyncReady=true;hideAuthDialog();updateAuthButton();renderSyncedData();
+  }catch(error){initializedUserId='';setAuthMessage(`同步失敗：${error.message}`,true);console.error('[Supabase sync] 初始同步失敗',error)}
+}
+async function refreshCollectionsFromSupabase(){
+  if(!cloudSyncReady||!signedInUser||!navigator.onLine||cloudRefreshBusy)return;
+  cloudRefreshBusy=true;
+  try{
+    await Promise.all([...dirtyCloudCollections].map(syncCollectionToSupabase));
+    let changed=false;
+    for(const [type,collection] of Object.entries(CLOUD_COLLECTIONS)){
+      if(dirtyCloudCollections.has(type)||cloudSyncLocks.has(type))continue;
+      const {data,error}=await supabaseClient.from(collection.table).select('*').eq('user_id',signedInUser.id);if(error)throw error;
+      const cloud=data.map(fromSupabaseRow);collection.set(cloud);localStorage.setItem(collection.storageKey,JSON.stringify(cloud));knownCloudIds.set(type,new Set(cloud.map(item=>String(item.id))));changed=true;
+    }
+    if(changed)renderSyncedData();
+  }catch(error){console.warn('[Supabase sync] 雲端重新整理失敗，繼續使用本機快取。',error)}
+  finally{cloudRefreshBusy=false}
+}
+function createAuthUi(){
+  if(document.getElementById('supabaseAuthDialog'))return;
+  const dialog=document.createElement('dialog');dialog.id='supabaseAuthDialog';dialog.style.cssText='border:0;border-radius:20px;padding:0;max-width:390px;width:calc(100% - 32px);box-shadow:0 24px 80px rgba(15,23,42,.3)';
+  dialog.innerHTML=`<form id="supabaseAuthForm" style="padding:28px;display:grid;gap:16px"><div><h2 style="margin:0 0 8px">家庭記帳登入</h2><p style="margin:0;color:#64748b">登入後會將本機資料與 Supabase 同步。</p></div><label style="display:grid;gap:6px">Email<input id="supabaseEmail" type="email" autocomplete="username" required style="padding:12px;border:1px solid #cbd5e1;border-radius:10px"></label><label style="display:grid;gap:6px">Password<input id="supabasePassword" type="password" autocomplete="current-password" required style="padding:12px;border:1px solid #cbd5e1;border-radius:10px"></label><p id="supabaseAuthMessage" role="status" style="min-height:20px;margin:0;color:#64748b"></p><button type="submit" style="border:0;border-radius:10px;padding:12px;background:#2563eb;color:white;font-weight:700;cursor:pointer">登入並同步</button></form>`;
+  dialog.addEventListener('cancel',event=>event.preventDefault());document.body.appendChild(dialog);
+  $('supabaseAuthForm').addEventListener('submit',async event=>{
+    event.preventDefault();const button=event.submitter;button.disabled=true;setAuthMessage('登入中…');
+    const {data,error}=await supabaseClient.auth.signInWithPassword({email:$('supabaseEmail').value.trim(),password:$('supabasePassword').value});
+    button.disabled=false;if(error){setAuthMessage(`登入失敗：${error.message}`,true);return}await initializeUserSync(data.user);
+  });
+  const authButton=document.createElement('button');authButton.id='supabaseAuthButton';authButton.type='button';authButton.style.cssText='position:fixed;right:18px;bottom:18px;z-index:20;border:0;border-radius:999px;padding:10px 14px;background:#0f172a;color:white;box-shadow:0 8px 24px rgba(15,23,42,.22);cursor:pointer';
+  authButton.addEventListener('click',async()=>{if(signedInUser)await supabaseClient.auth.signOut();else showAuthDialog()});document.body.appendChild(authButton);updateAuthButton();
+}
+function setAuthMessage(message,isError=false){const element=$('supabaseAuthMessage');if(element){element.textContent=message;element.style.color=isError?'#dc2626':'#64748b'}}
+function showAuthDialog(message=''){setAuthMessage(message);const dialog=$('supabaseAuthDialog');if(dialog&&!dialog.open)dialog.showModal()}
+function hideAuthDialog(){const dialog=$('supabaseAuthDialog');if(dialog?.open)dialog.close()}
+function updateAuthButton(){const button=$('supabaseAuthButton');if(button)button.textContent=signedInUser?'Supabase 登出':'Supabase 登入'}
+function handleSignedOut(){
+  signedInUser=null;cloudSyncReady=false;initializedUserId='';cloudSyncLocks.clear();dirtyCloudCollections.clear();knownCloudIds.clear();updateAuthButton();showAuthDialog('請使用 Email 與 Password 登入。');
+}
+async function startSupabaseSync(){
+  if(!supabaseSyncConfigured()){console.info('[Supabase sync] 尚未填入 Project URL 與 Publishable key，目前僅使用 localStorage。');return}
+  createAuthUi();
+  try{await loadSupabaseJs()}catch(error){setAuthMessage(error.message,true);showAuthDialog();return}
+  supabaseClient=window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+  supabaseClient.auth.onAuthStateChange((event,session)=>setTimeout(()=>{
+    if(event==='SIGNED_OUT'||!session?.user)handleSignedOut();else initializeUserSync(session.user);
+  },0));
+  const {data,error}=await supabaseClient.auth.getSession();
+  if(error){setAuthMessage(error.message,true);showAuthDialog();return}
+  if(data.session?.user)await initializeUserSync(data.session.user);else handleSignedOut();
+  window.addEventListener('online',()=>refreshCollectionsFromSupabase());
+  window.addEventListener('focus',()=>refreshCollectionsFromSupabase());
+  setInterval(()=>refreshCollectionsFromSupabase(),60000);
+}
 function migratePropertyNames(){
   let recordsChanged=false,settingsChanged=false;records=records.map(r=>{if(r.property==='新化秀子'){recordsChanged=true;return {...r,property:'新市房子'}}return r});recurringSettings=recurringSettings.map(s=>{if(s.property==='新化秀子'){settingsChanged=true;return {...s,property:'新市房子'}}return s});if(recordsChanged)saveRecords();if(settingsChanged)saveRecurringSettings();
 }
@@ -55,11 +196,12 @@ function detailRecords(){
 function render(){
   syncRecurringRecords();
   const monthRecords=records.filter(r=>!els.month.value||r.date.startsWith(els.month.value));
-  const list=filteredRecords(),details=detailRecords(),income=monthRecords.filter(r=>r.type==='income'),expense=monthRecords.filter(r=>r.type==='expense');
+  const selectedType=els.type.value,summaryRecords=selectedType==='all'?monthRecords:monthRecords.filter(r=>r.type===selectedType);
+  const list=filteredRecords(),details=detailRecords(),income=summaryRecords.filter(r=>r.type==='income'),expense=summaryRecords.filter(r=>r.type==='expense');
   const incomeTotal=income.reduce((s,r)=>s+r.amount,0),expenseTotal=expense.reduce((s,r)=>s+r.amount,0);
-  const creditTotal=monthRecords.filter(r=>r.type==='expense'&&r.payment==='信用卡').reduce((s,r)=>s+r.amount,0);
+  const creditTotal=summaryRecords.filter(r=>r.type==='expense'&&r.payment==='信用卡').reduce((s,r)=>s+r.amount,0);
   const balance=incomeTotal-expenseTotal;
-  const mortgageTotal=monthRecords.filter(r=>r.type==='expense'&&r.category==='房貸').reduce((s,r)=>s+r.amount,0);
+  const mortgageTotal=summaryRecords.filter(r=>r.type==='expense'&&r.category==='房貸').reduce((s,r)=>s+r.amount,0);
   $('incomeTotal').textContent=money(incomeTotal); $('expenseTotal').textContent=money(expenseTotal); $('balanceTotal').textContent=money(balance);
   $('incomeCount').textContent=`${income.length} 筆`; $('expenseCount').textContent=`${expense.length} 筆`;
   $('balanceHint').textContent=balance>0?'已扣除信用卡支出':balance<0?'含信用卡後支出超過收入':'含信用卡後收支平衡'; $('recordCount').textContent=`共 ${details.length} 筆`;
@@ -145,7 +287,7 @@ function utilityBillMonth(record){
 }
 function currentMonthUtilityRecords(){return records.filter(r=>r.source==='utility'&&(!els.month.value||utilityBillMonth(r)===els.month.value)).sort((a,b)=>utilityBillMonth(b).localeCompare(utilityBillMonth(a))||a.utilityItem.localeCompare(b.utilityItem,'zh-Hant'))}
 function renderUtilityRecords(){
-  const list=currentMonthUtilityRecords(),unpaid=list.filter(r=>r.utilityStatus!=='paid');$('utilityTotal').textContent=money(list.reduce((sum,r)=>sum+r.amount,0));$('utilityUnpaid').textContent=`待繳 ${unpaid.length} 筆`;$('utilityRecordEmpty').hidden=list.length>0;
+  const list=currentMonthUtilityRecords(),unpaid=list.filter(r=>r.utilityStatus!=='paid'),phoneRecords=list.filter(r=>['mobile','landline'].includes(utilityRecordProfileType(r))||r.category==='電話費');$('utilityTotal').textContent=money(list.reduce((sum,r)=>sum+r.amount,0));$('utilityPhoneTotal').textContent=money(phoneRecords.reduce((sum,r)=>sum+r.amount,0));$('utilityUnpaid').textContent=`待繳 ${unpaid.length} 筆`;$('utilityRecordEmpty').hidden=list.length>0;
   $('utilityQuickList').innerHTML=utilityProfiles.map(profile=>`<div class="utility-chip ${list.some(r=>r.utilityProfileId===profile.id||r.utilityItem===profile.name)?'has-bill':''}">${esc(profile.name)}${list.some(r=>r.utilityProfileId===profile.id||r.utilityItem===profile.name)?' ✓':''}</div>`).join('');
   $('utilityRecordBody').innerHTML=list.map(r=>`<tr><td>${esc(utilityBillMonth(r))}</td><td><div class="record-main">${esc(r.utilityItem)}</div><div class="record-note">${esc(r.utilityPhoneName||r.note||'—')}</div></td><td><div>${esc(r.member||'未設定')}</div><div class="record-note">期限 ${esc(r.utilityDueDate||'—')}</div></td><td><span class="status-tag ${r.utilityStatus==='paid'?'paid':'unpaid'}">${r.utilityStatus==='paid'?'已繳費':'尚未繳費'}</span></td><td class="money expense">− ${money(r.amount)}</td><td class="row-actions"><button class="icon-btn" data-utility-edit="${r.id}">編輯</button><button class="icon-btn" data-utility-delete="${r.id}">刪除</button></td></tr>`).join('');
   renderElectricAnalysis();
@@ -385,4 +527,4 @@ $('importInput').addEventListener('change',async e=>{
   records=[...imported,...records];saveRecords();render();e.target.value='';toast(`已匯入 ${imported.length} 筆帳目`);
 });
 
-els.month.value=localDateValue().slice(0,7); updateCategories('expense'); render(); renderAccounts(); renderForeignAccounts(); toggleCustomBank(); updateForeignKindFields();
+els.month.value=localDateValue().slice(0,7); updateCategories('expense'); render(); renderAccounts(); renderForeignAccounts(); toggleCustomBank(); updateForeignKindFields(); startSupabaseSync();
