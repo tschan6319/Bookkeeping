@@ -1,4 +1,4 @@
-const SUPABASE_URL = 'https://Plqelsrzhcboeejgxnui .supabase.co';
+const SUPABASE_URL = 'https://Plqelsrzhcboeejgxnui.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_QLJgsmp_pm7ANwo05GEE6A_tnE-3In4';
 const STORE_KEY = 'family-ledger-v1';
 const ACCOUNT_STORE_KEY = 'family-ledger-accounts-v1';
