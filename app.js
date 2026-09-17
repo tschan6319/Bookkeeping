@@ -47,13 +47,14 @@ function saveForeignAccounts() { saveLocalCollection('foreignAccounts', foreignA
 function loadUtilityProfiles() { try { const saved = JSON.parse(localStorage.getItem(UTILITY_PROFILE_KEY)); if (!Array.isArray(saved)) return defaultUtilityProfiles.map(p => ({ ...p })); const oldNames = { 'electric-1': '電錶 1', 'electric-2': '電錶 2', 'electric-3': '電錶 3' }; const newNames = { 'electric-1': '電費 1F', 'electric-2': '電費 2F', 'electric-3': '電費 3F' }; return saved.map(p => oldNames[p.id] === p.name ? { ...p, name: newNames[p.id] } : p) } catch { return defaultUtilityProfiles.map(p => ({ ...p })) } }
 function saveUtilityProfiles() { saveLocalCollection('utilityProfiles', utilityProfiles) }
 function loadRecurringSettings() { try { return JSON.parse(localStorage.getItem(RECURRING_STORE_KEY)) || [] } catch { return [] } }
-function saveRecurringSettings() { localStorage.setItem(RECURRING_STORE_KEY, JSON.stringify(recurringSettings)) }
+function saveRecurringSettings() { saveLocalCollection('recurringSettings', recurringSettings) }
 
 const CLOUD_COLLECTIONS = Object.freeze({
   records: { table: 'records', storageKey: STORE_KEY, get: () => records, set: value => { records = value } },
   accounts: { table: 'accounts', storageKey: ACCOUNT_STORE_KEY, get: () => accounts, set: value => { accounts = value } },
   foreignAccounts: { table: 'foreign_accounts', storageKey: FOREIGN_ACCOUNT_STORE_KEY, get: () => foreignAccounts, set: value => { foreignAccounts = value } },
-  utilityProfiles: { table: 'utility_profiles', storageKey: UTILITY_PROFILE_KEY, get: () => utilityProfiles, set: value => { utilityProfiles = value } }
+  utilityProfiles: { table: 'utility_profiles', storageKey: UTILITY_PROFILE_KEY, get: () => utilityProfiles, set: value => { utilityProfiles = value } },
+  recurringSettings: { table: 'recurring_settings', storageKey: RECURRING_STORE_KEY, get: () => recurringSettings, set: value => { recurringSettings = value } }
 });
 migratePropertyNames();
 
@@ -107,13 +108,16 @@ async function loadInitialCollection(type) {
   if (data.length) {
     const cloud = data.map(fromSupabaseRow); collection.set(cloud); localStorage.setItem(collection.storageKey, JSON.stringify(cloud)); knownCloudIds.set(type, new Set(cloud.map(item => String(item.id)))); return;
   }
-  const seedRows = initialLocalUploadAllowed ? local : (type === 'utilityProfiles' ? defaultUtilityProfiles.map(profile => ({ ...profile })) : []);
-  const shouldSeed = seedRows.length && (localStorage.getItem(collection.storageKey) !== null || type === 'utilityProfiles');
-  if (shouldSeed) {
+  // SAFETY: An empty cloud table must never erase existing local data.
+  // If local data exists, preserve it and seed Supabase from the local copy.
+  const seedRows = Array.isArray(local) && local.length
+    ? local
+    : (type === 'utilityProfiles' ? defaultUtilityProfiles.map(profile => ({ ...profile })) : []);
+  if (seedRows.length) {
     const { error: uploadError } = await supabaseClient.from(collection.table).upsert(seedRows.map(item => toSupabaseRow(item, signedInUser.id))); if (uploadError) throw uploadError;
     collection.set(seedRows); localStorage.setItem(collection.storageKey, JSON.stringify(seedRows)); knownCloudIds.set(type, new Set(seedRows.map(item => String(item.id)))); return;
   }
-  collection.set([]); localStorage.setItem(collection.storageKey, '[]');
+  // Both cloud and local are empty. Keep the local state as-is; never overwrite it merely because cloud is empty.
   knownCloudIds.set(type, new Set());
 }
 async function initializeUserSync(user) {
@@ -133,7 +137,12 @@ async function refreshCollectionsFromSupabase() {
     for (const [type, collection] of Object.entries(CLOUD_COLLECTIONS)) {
       if (dirtyCloudCollections.has(type) || cloudSyncLocks.has(type)) continue;
       const { data, error } = await supabaseClient.from(collection.table).select('*').eq('user_id', signedInUser.id); if (error) throw error;
-      const cloud = data.map(fromSupabaseRow); collection.set(cloud); localStorage.setItem(collection.storageKey, JSON.stringify(cloud)); knownCloudIds.set(type, new Set(cloud.map(item => String(item.id)))); changed = true;
+      const cloud = data.map(fromSupabaseRow);
+      // SAFETY: Do not replace a non-empty local collection with an empty cloud response.
+      if (!cloud.length && collection.get().length) {
+        dirtyCloudCollections.add(type); scheduleCloudPush(type, 300); continue;
+      }
+      collection.set(cloud); localStorage.setItem(collection.storageKey, JSON.stringify(cloud)); knownCloudIds.set(type, new Set(cloud.map(item => String(item.id)))); changed = true;
     }
     if (changed) renderSyncedData();
   } catch (error) { console.warn('[Supabase sync] 雲端重新整理失敗，繼續使用本機快取。', error) }
